@@ -1,0 +1,143 @@
+---
+title: "Persebaran COVID-19 di Indonesia"
+subtitle: "last update `r format(Sys.Date(), '%d %B %Y')` 09:30 WIB"
+author: "Muhammad Husni"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output: 
+  html_document:
+    theme: united
+    highlight: breezedark
+    df_print: paged
+    toc: true
+    toc_float:
+      collapsed: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T,
+                      warning = FALSE,
+                      message = FALSE)
+```
+
+# Pendahuluan {.tabset}
+
+Pada artikel #dirumahaja kali ini saya mencoba membuat sebuah tulisan tentang visualisasi secara spasial. Lanjutan dari artikel sebelumnya, artikel kali ini masih berkutat dengan topik yang sama yaitu COVID-19. Data yang saya gunakan bersumber dari [kawalcorona.com](kawalcorona.com) dimana data dimulai dari tanggal 22 Jan 2020 sampai dengan data terupdate per tanggal 6 Juni 2020. Perlu diketahui pula bahwa data spasial (.shp) yang saya gunakan bersumber dari [gadm.org](gadm.org).  
+Ada beberapa tahapan yang akan saya lakukan untuk visualisasi kali ini, yaitu : 
+
+1. Import data virus covid-19 di Indondesia. 
+2. Membersihkan data**.
+3. Import data peta dalam bentuk (.json) map.
+4. Membuang beberapa kolom pada data peta yang tidak diperlukan.
+5. Menggabungkan data virus covid-19 dengan data peta agar menjadi satu data yang utuh.
+6. Membuat visualisasi (spasial) persebaran virus covid-19 menggunakan `leaflet`.
+
+** Menghapus data provinsi Kalimantan Utara dikarenakan data peta yang dimiliki belum ada provinsi Kalimantan Utara.
+   Menghapus kolom no karena tidak diperlukan.
+   Menghitung jumlah kasus per Provinsi berdasarkan kasus positif, sembuh dan meninggal.
+
+## Library Setup
+
+Berikut adalah beberapa packages yang saya gunakan dalam artikel kali ini : 
+```{r}
+# packages 'dplyr' berfungsi untuk wrangling data
+library(dplyr) 
+# packages 'leaflet' berfungsi untuk visualisasi secara spasial
+library(leaflet)
+# packages 'geojsonio' berfungsi untuk membaca data spasial (.json) 
+library(geojsonio)
+```
+
+# Visualisasi
+
+Berikut ini gambaran data kasus COVID-19 per tanggal 05 Juni 2020 pada masing-masing provinsi di Indonesia.
+```{r}
+df <- read.csv("data_input/covid-19.csv")
+df <- df %>%
+  arrange(provinsi) %>% 
+  select(-no) %>% 
+  filter(provinsi != "Kalimantan Utara") %>% 
+  group_by(provinsi) %>% 
+  mutate(total_case = positif+sembuh+meninggal) %>% 
+  ungroup()
+df %>% head()
+```
+
+## Import Data Map
+
+Dalam hal ini saya akan melakukan import data menggunakan packages `geojson`. Setelah import data telah selesai dilakukan maka hal selanjutnya yang saya lakukan ialah menghapus beberapa kolom yang tidak diperlukan.
+
+```{r}
+indo_json <- geojson_read("data_input/map_data/gadm36_IDN_1.json", what = "sp")
+head(indo_json@data)
+
+```
+
+Tahapan selanjutnya ialah mengubah tipe data yang sebelumnya `SpatialPolygonsDataFrame` menjadi `sf`.
+
+```{r}
+indo_json_mod <- sf::st_as_sf(indo_json)
+indo_json_mod <- indo_json_mod %>% 
+  select(-c(VARNAME_1, NL_NAME_1, TYPE_1, ENGTYPE_1, CC_1, HASC_1))
+glimpse(indo_json_mod)
+```
+
+## Menggabungkan Data
+
+Ketika kita menggunakan 2 data frame untuk menghasilkan 1 output, maka akan lebih memudahkan jika data frame tersebut kita gabungkan menjadi 1. Perlu diingat bahwa ketika kita ingin menggabungkan 2 atau lebih data frame masing-masing data frame tersebut harus memiliki suatu kolom yang unique. Kolom yang dimaksud adalah kolom memiliki isi dan nama yang sama sehingga bisa digunakan sebagai *key column*.
+```{r}
+map_data <- indo_json_mod %>% 
+  left_join(df, by = c("NAME_1" = "provinsi"))
+map_data %>% glimpse()
+```
+## Hasil Visualisasi
+
+Berikut step by step membuat visualisasi menggunakan packages `leaflet`.
+
+```{r}
+m <- leaflet(map_data)
+
+
+rendah <- map_data %>% 
+  filter(total_case <= 93) %>% 
+  dplyr::select(GID_1, NAME_1, total_case, positif, sembuh, meninggal)
+sedang <- map_data %>% 
+  filter(total_case > 93 & total_case < 502) %>% 
+  dplyr::select(GID_1, NAME_1, total_case, positif, sembuh, meninggal)
+tinggi <- map_data %>% 
+  filter(total_case >= 502) %>% 
+  dplyr::select(GID_1, NAME_1, total_case, positif, sembuh, meninggal)
+
+
+bins <- c(0, 193, 509, Inf)
+pal <- colorBin(c("aquamarine", "orange", "firebrick4"), domain = map_data$total_case, bins = bins)
+
+
+popup.cont  <- paste("<h2><b>", map_data$NAME_1, "</b></h2>",
+   "<h4><b> Positif: ", map_data$positif, "</h4></b>",
+   "<h4><b> Sembuh: ", map_data$sembuh, "</h4></b>",
+   "<h4><b> Meninggal: ", map_data$meninggal, "</h4></b>"
+)
+```
+
+Berikut hasil visualisasi secara spasial berdasarkan tingkat persebaran tinggi, sedang dan rendah suatu kasus.
+
+```{r}
+m %>% 
+  addProviderTiles(providers$Esri.NatGeoWorldMap) %>% 
+  addPolygons(fillColor = ~pal(total_case),
+              weight = 1, 
+              opacity = 1, 
+              color = "black", 
+              dashArray = "3", 
+              fillOpacity = 0.5,
+              label = paste0(map_data$NAME_1),
+              popup = popup.cont) %>%
+  addLegend("bottomright", 
+            pal = pal,
+            values = c("rendah", "sedang", "tinggi"),
+            title = "Persebaran COVID-19 di Indonesia",
+            labFormat = labelFormat(digits = 2),
+            opacity = 1)
+```
+ 
